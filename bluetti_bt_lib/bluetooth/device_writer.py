@@ -10,6 +10,7 @@ from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
 from ..utils.privacy import mac_loggable
 from .encryption import BluettiEncryption, Message, MessageType
+from .exceptions import ConnectionFailedError
 
 
 class DeviceWriterConfig:
@@ -43,16 +44,31 @@ class DeviceWriter:
         async with self.polling_lock:
             try:
                 async with async_timeout.timeout(self.config.timeout):
-                    await self._connect_if_needed()
+                    try:
+                        await self._connect_if_needed()
+                    except (BleakError, TimeoutError) as err:
+                        raise ConnectionFailedError(
+                            "Failed to connect to device for writing. "
+                            "Another Bluetooth client (such as the "
+                            "Bluetti app) may already be connected."
+                        ) from err
                     command_bytes = await self._prepare_command_bytes(bytes(command))
                     await self.client.write_gatt_char(WRITE_UUID, command_bytes)
                     self.logger.debug("Write successful")
+            except ConnectionFailedError:
+                raise
             except TimeoutError:
-                self.logger.warning("Timeout writing to device")
+                raise ConnectionFailedError(
+                    "Timed out writing to device. Another Bluetooth client "
+                    "(such as the Bluetti app) may already be connected."
+                )
             except BleakError as err:
-                self.logger.warning("Bleak error: %s", err)
+                raise ConnectionFailedError(
+                    f"Bluetooth error writing to device: {err}"
+                ) from err
             except Exception as err:
-                self.logger.warning("Unknown error: %s", err)
+                self.logger.error("Unexpected error writing to device: %s", err)
+                raise
             finally:
                 await self._cleanup()
 
