@@ -258,6 +258,7 @@ class DeviceReader:
             if not parsed_data:
                 return None
 
+            parsed_data.update(self.bluetti_device.derive(parsed_data))
             return parsed_data
 
     async def _async_send_command(self, registers: DeviceRegister) -> bytes:

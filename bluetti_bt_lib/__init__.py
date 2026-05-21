@@ -14,5 +14,5 @@ from .bluetooth import (
     EncryptionHandshakeError,
 )
 from .enums import *
-from .fields import DeviceField, NumberField, FieldName, FieldUnit, get_unit
+from .fields import DerivedBoolField, DeviceField, NumberField, FieldName, FieldUnit, get_unit
 from .utils.device_builder import build_device

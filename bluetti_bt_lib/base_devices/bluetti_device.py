@@ -1,7 +1,16 @@
 from typing import Any, List
 
 from ..registers import ReadableRegisters, WriteableRegister
-from ..fields import DeviceField, BoolField, BoolFieldNonZero, SwitchField, SelectField, NumberField
+from ..fields import (
+    DeviceField,
+    DerivedBoolField,
+    BoolField,
+    BoolFieldNonZero,
+    SwitchField,
+    SelectField,
+    NumberField,
+    FieldName,
+)
 
 
 class BluettiDevice:
@@ -119,13 +128,14 @@ class BluettiDevice:
         return WriteableRegister(field.address, value, self.slave_address)
 
     def get_bool_fields(self):
-        """Returns all bool fields for this device"""
-        return [
+        """Returns all bool fields for this device (including derived)"""
+        hw_fields = [
             f
             for f in self.fields
             if (isinstance(f, BoolField) or isinstance(f, BoolFieldNonZero))
             and not isinstance(f, SwitchField)
         ]
+        return hw_fields + self.get_derived_bool_fields()
 
     def get_switch_fields(self):
         """Returns all switch fields for this device"""
@@ -150,3 +160,20 @@ class BluettiDevice:
             and not isinstance(f, SelectField)
             and not isinstance(f, NumberField)
         ]
+
+    def get_derived_bool_fields(self) -> list[DerivedBoolField]:
+        """Returns boolean fields derived from sensor data (not read from registers)."""
+        derived = []
+        sensor_names = {f.name for f in self.fields}
+        if FieldName.AC_INPUT_VOLTAGE.value in sensor_names:
+            derived.append(DerivedBoolField(FieldName.AC_INPUT_ON, FieldName.AC_INPUT_VOLTAGE))
+        return derived
+
+    def derive(self, parsed: dict) -> dict:
+        """Compute derived fields from parsed sensor data."""
+        result = {}
+        for f in self.get_derived_bool_fields():
+            source_val = parsed.get(f.source)
+            if source_val is not None:
+                result[f.name] = float(source_val) > f.above
+        return result

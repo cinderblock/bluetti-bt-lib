@@ -1,4 +1,5 @@
 from .DeviceField import *
+from .DerivedBoolField import *
 from .FieldName import *
 from .FieldUnit import *
 

@@ -5,6 +5,7 @@ from enum import Enum, unique
 class FieldName(Enum):
     AC_INPUT_CURRENT = "ac_input_current"
     AC_INPUT_FREQUENCY = "ac_input_frequency"
+    AC_INPUT_ON = "ac_input_on"
     AC_INPUT_POWER = "ac_input_power"
     AC_INPUT_VOLTAGE = "ac_input_voltage"
     AC_OUTPUT_FREQUENCY = "ac_output_frequency"
