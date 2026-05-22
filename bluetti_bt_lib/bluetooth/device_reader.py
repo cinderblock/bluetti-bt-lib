@@ -13,6 +13,8 @@ from bleak_retry_connector import (
     establish_connection,
 )
 
+from cryptography.exceptions import InvalidSignature
+
 from .encryption import BluettiEncryption, Message, MessageType
 from .exceptions import (
     DeviceNotFoundError,
@@ -79,6 +81,11 @@ class DeviceReader:
         self.logger.debug("Reading device registers")
 
         async with self.polling_lock:
+            # Start every read from a clean handshake state so a partial
+            # handshake from a previous attempt cannot leak stale IV/keys
+            # into this session.
+            self.encryption.reset()
+
             try:
                 async with async_timeout.timeout(self.config.timeout):
                     # Stage 1: Scan for device
@@ -250,9 +257,9 @@ class DeviceReader:
                 if self.client:
                     await self.client.disconnect()
                     self.logger.debug("Disconnected from device")
-
-            # Reset Encryption keys
-            self.encryption.reset()
+                # Always reset encryption state, even on exception, so a
+                # partial handshake never leaks into the next read.
+                self.encryption.reset()
 
             # Check if dict is empty
             if not parsed_data:
@@ -314,18 +321,55 @@ class DeviceReader:
                     return
 
             if self.encryption.unsecure_aes_key is None:
-                self.logger.error(
-                    "Received encrypted message before key initialization"
+                # No CHALLENGE has been processed yet on this connection, so
+                # we can't decrypt anything. This happens when the device
+                # sends a queued/unsolicited notification before initiating
+                # the handshake. Drop it and wait for CHALLENGE.
+                self.logger.debug(
+                    "Dropping pre-handshake notification (%d bytes) — "
+                    "waiting for CHALLENGE",
+                    len(message.buffer),
                 )
+                return
 
             key, iv = self.encryption.getKeyIv()
-            decrypted = Message(self.encryption.aes_decrypt(message.buffer, key, iv))
+            try:
+                decrypted = Message(
+                    self.encryption.aes_decrypt(message.buffer, key, iv)
+                )
+            except ValueError as err:
+                # Malformed encrypted frame (wrong length, misaligned, etc.).
+                # Don't let it surface as a task-exception in bleak; just drop
+                # the frame and let the handshake timeout drive the retry.
+                self.logger.warning(
+                    "Failed to decrypt notification (%d bytes) for %s: %s",
+                    len(message.buffer),
+                    mac_loggable(self.mac),
+                    err,
+                )
+                return
 
             if decrypted.is_pre_key_exchange:
                 decrypted.verify_checksum()
 
                 if decrypted.type == MessageType.PEER_PUBKEY:
-                    peer_pubkey_response = self.encryption.msg_peer_pubkey(decrypted)
+                    try:
+                        peer_pubkey_response = self.encryption.msg_peer_pubkey(
+                            decrypted
+                        )
+                    except InvalidSignature:
+                        # Peer pubkey verification failed — most likely a stale
+                        # handshake message or a device firmware change. Log
+                        # and let the read() handshake timeout drive the retry;
+                        # raising here would only surface as a noisy task-
+                        # exception in the bleak notification callback.
+                        self.logger.warning(
+                            "Peer pubkey signature verification failed for %s; "
+                            "abandoning this handshake attempt",
+                            mac_loggable(self.mac),
+                        )
+                        self.encryption.reset()
+                        return
                     await self.client.write_gatt_char(WRITE_UUID, peer_pubkey_response)
                     return
 
