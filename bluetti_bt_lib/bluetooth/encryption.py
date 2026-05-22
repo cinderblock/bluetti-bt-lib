@@ -182,12 +182,18 @@ class Message:
     def type(self) -> int:
         return MessageType(self.body[0])
 
-    def verify_checksum(self):
+    def verify_checksum(self) -> bool:
         message_checksum = self.checksum
         computed_checksum = hexsum(self.body, len(message_checksum))
         if computed_checksum != message_checksum:
-            _LOGGER.error("Checksum error!")
+            _LOGGER.error(
+                "Checksum mismatch: expected %s, got %s",
+                bytes(message_checksum).hex(),
+                computed_checksum.hex(),
+            )
+            return False
         _LOGGER.debug("Checksum OK")
+        return True
 
 
 class BluettiEncryption:

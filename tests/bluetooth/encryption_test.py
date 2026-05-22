@@ -1,6 +1,11 @@
 import unittest
 
-from bluetti_bt_lib.bluetooth.encryption import BluettiEncryption
+from bluetti_bt_lib.bluetooth.encryption import (
+    BluettiEncryption,
+    KEX_MAGIC,
+    Message,
+    hexsum,
+)
 
 
 class TestBluettiEncryptionReset(unittest.TestCase):
@@ -34,3 +39,18 @@ class TestBluettiEncryptionReset(unittest.TestCase):
     def test_is_ready_for_commands_false_by_default(self):
         enc = BluettiEncryption()
         self.assertFalse(enc.is_ready_for_commands)
+
+
+class TestMessageVerifyChecksum(unittest.TestCase):
+    def _build(self, body: bytes) -> Message:
+        return Message(KEX_MAGIC + body + hexsum(body, 2))
+
+    def test_returns_true_on_valid_checksum(self):
+        # body = type(0x01) + len(0x04) + 4 bytes payload
+        message = self._build(b"\x01\x04\xaa\xbb\xcc\xdd")
+        self.assertTrue(message.verify_checksum())
+
+    def test_returns_false_on_bad_checksum(self):
+        body = b"\x01\x04\xaa\xbb\xcc\xdd"
+        bad = Message(KEX_MAGIC + body + b"\x00\x00")
+        self.assertFalse(bad.verify_checksum())

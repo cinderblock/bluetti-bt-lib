@@ -309,7 +309,8 @@ class DeviceReader:
             message = Message(data)
 
             if message.is_pre_key_exchange:
-                message.verify_checksum()
+                if not message.verify_checksum():
+                    return
 
                 if message.type == MessageType.CHALLENGE:
                     challenge_response = self.encryption.msg_challenge(message)
@@ -350,7 +351,8 @@ class DeviceReader:
                 return
 
             if decrypted.is_pre_key_exchange:
-                decrypted.verify_checksum()
+                if not decrypted.verify_checksum():
+                    return
 
                 if decrypted.type == MessageType.PEER_PUBKEY:
                     try:

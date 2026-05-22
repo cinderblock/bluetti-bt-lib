@@ -128,7 +128,8 @@ class DeviceWriter:
 
     async def _handle_pre_key_message(self, message: Message):
         """Handle unencrypted handshake messages: challenge and challenge-accepted."""
-        message.verify_checksum()
+        if not message.verify_checksum():
+            return
         if message.type == MessageType.CHALLENGE:
             self.logger.debug("Received challenge, sending response")
             response = self._encryption.msg_challenge(message)
@@ -162,7 +163,8 @@ class DeviceWriter:
         if not decrypted.is_pre_key_exchange:
             return
 
-        decrypted.verify_checksum()
+        if not decrypted.verify_checksum():
+            return
         if decrypted.type == MessageType.PEER_PUBKEY:
             self.logger.debug("Received peer public key, sending ours")
             try:
