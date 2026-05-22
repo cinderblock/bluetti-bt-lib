@@ -79,6 +79,11 @@ def verify_and_extract_signed_data(message, signed_data_suffix: bytes | None):
     # 64 bytes of signature
     if len(message) != 128:
         raise ValueError("Unexpected message length")
+    if signed_data_suffix is None:
+        raise ValueError(
+            "verify_and_extract_signed_data called before challenge IV was set; "
+            "encryption handshake state is incomplete"
+        )
 
     data = message[:64]
     signature = message[64:]
@@ -91,6 +96,13 @@ def verify_and_extract_signed_data(message, signed_data_suffix: bytes | None):
         )
         _LOGGER.debug("Signature OK")
     except InvalidSignature:
+        _LOGGER.error(
+            "Peer pubkey signature verification failed. "
+            "pubkey=%s iv=%s signature=%s",
+            data.tobytes().hex(),
+            signed_data_suffix.hex(),
+            bytes(signature).hex(),
+        )
         raise
 
     return data
@@ -179,23 +191,29 @@ class Message:
 
 
 class BluettiEncryption:
-    # Derived exclusively from data sent over the network
-    # Used for the initial handshake
-    unsecure_aes_key: bytes | None = None
+    def __init__(self) -> None:
+        # Derived exclusively from data sent over the network
+        # Used for the initial handshake
+        self.unsecure_aes_key: bytes | None = None
 
-    # Predictably derived from a seed sent by the peer
-    # This is the same for all the messages encrypted
-    # with that key during the connection
-    unsecure_aes_iv: bytes | None = None
+        # Predictably derived from a seed sent by the peer
+        # This is the same for all the messages encrypted
+        # with that key during the connection
+        self.unsecure_aes_iv: bytes | None = None
 
-    # Proper key exchange gives us another key,
-    # that is used for the remainder of the connection
-    # IV is random per message
-    secure_aes_key: bytes | None = None
+        # Proper key exchange gives us another key,
+        # that is used for the remainder of the connection
+        # IV is random per message
+        self.secure_aes_key: bytes | None = None
 
-    # Received through key exchange
-    # The signing key for the key exchange is well-known
-    peer_pubkey: bytes | None = None
+        # Received through key exchange
+        # The signing key for the key exchange is well-known
+        self.peer_pubkey = None
+
+        # Our ephemeral ECDH keypair; created during msg_peer_pubkey
+        # and consumed in msg_key_accepted to derive secure_aes_key
+        self.my_pubkey = None
+        self.my_privkey = None
 
     @property
     def is_ready_for_commands(self) -> bool:
@@ -296,5 +314,9 @@ class BluettiEncryption:
         )
 
     def reset(self):
-        self.peer_pubkey = None
+        self.unsecure_aes_key = None
+        self.unsecure_aes_iv = None
         self.secure_aes_key = None
+        self.peer_pubkey = None
+        self.my_pubkey = None
+        self.my_privkey = None
