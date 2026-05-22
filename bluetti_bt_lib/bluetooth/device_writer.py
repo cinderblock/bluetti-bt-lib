@@ -5,6 +5,7 @@ from typing import Any
 import async_timeout
 from bleak import BleakClient
 from bleak.exc import BleakError
+from cryptography.exceptions import InvalidSignature
 
 from ..const import NOTIFY_UUID, WRITE_UUID
 from ..base_devices import BluettiDevice
@@ -138,11 +139,25 @@ class DeviceWriter:
     async def _handle_encrypted_handshake_message(self, message: Message):
         """Handle encrypted handshake messages: peer public key and key-accepted."""
         if self._encryption.unsecure_aes_key is None:
-            self.logger.warning("Received encrypted message before challenge was completed")
+            self.logger.debug(
+                "Dropping pre-handshake notification (%d bytes) — "
+                "waiting for CHALLENGE",
+                len(message.buffer),
+            )
             return
 
         key, iv = self._encryption.getKeyIv()
-        decrypted = Message(self._encryption.aes_decrypt(message.buffer, key, iv))
+        try:
+            decrypted = Message(
+                self._encryption.aes_decrypt(message.buffer, key, iv)
+            )
+        except ValueError as err:
+            self.logger.warning(
+                "Failed to decrypt notification (%d bytes): %s",
+                len(message.buffer),
+                err,
+            )
+            return
 
         if not decrypted.is_pre_key_exchange:
             return
@@ -150,7 +165,18 @@ class DeviceWriter:
         decrypted.verify_checksum()
         if decrypted.type == MessageType.PEER_PUBKEY:
             self.logger.debug("Received peer public key, sending ours")
-            response = self._encryption.msg_peer_pubkey(decrypted)
+            try:
+                response = self._encryption.msg_peer_pubkey(decrypted)
+            except InvalidSignature:
+                # Don't let the exception escape to bleak's notification
+                # callback. The _complete_encryption_handshake waiter will
+                # time out and the write call will surface a clean error.
+                self.logger.warning(
+                    "Peer pubkey signature verification failed; "
+                    "abandoning this handshake attempt"
+                )
+                self._encryption.reset()
+                return
             await self.client.write_gatt_char(WRITE_UUID, response)
         elif decrypted.type == MessageType.PUBKEY_ACCEPTED:
             self.logger.debug("Key exchange complete, shared secret established")
