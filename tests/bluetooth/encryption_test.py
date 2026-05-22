@@ -4,6 +4,7 @@ from bluetti_bt_lib.bluetooth.encryption import (
     BluettiEncryption,
     KEX_MAGIC,
     Message,
+    MessageType,
     hexsum,
 )
 
@@ -54,3 +55,17 @@ class TestMessageVerifyChecksum(unittest.TestCase):
         body = b"\x01\x04\xaa\xbb\xcc\xdd"
         bad = Message(KEX_MAGIC + body + b"\x00\x00")
         self.assertFalse(bad.verify_checksum())
+
+
+class TestMessageType(unittest.TestCase):
+    def _build(self, body: bytes) -> Message:
+        return Message(KEX_MAGIC + body + hexsum(body, 2))
+
+    def test_known_type(self):
+        message = self._build(b"\x01\x04\xaa\xbb\xcc\xdd")
+        self.assertEqual(message.type, MessageType.CHALLENGE)
+
+    def test_unknown_type_returns_none(self):
+        # 0x09 is not a defined MessageType — must not raise.
+        message = self._build(b"\x09\x04\xaa\xbb\xcc\xdd")
+        self.assertIsNone(message.type)

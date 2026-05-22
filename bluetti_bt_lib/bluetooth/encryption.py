@@ -179,8 +179,12 @@ class Message:
         return self.body[2:]
 
     @property
-    def type(self) -> int:
-        return MessageType(self.body[0])
+    def type(self) -> "MessageType | None":
+        try:
+            return MessageType(self.body[0])
+        except ValueError:
+            _LOGGER.warning("Unknown message type byte: 0x%02x", self.body[0])
+            return None
 
     def verify_checksum(self) -> bool:
         message_checksum = self.checksum
