@@ -11,6 +11,7 @@ import pyasn1.codec.der.encoder as der_encoder
 from pyasn1.type import univ
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.exceptions import InvalidSignature
 
@@ -75,8 +76,8 @@ def der_to_raw_ecdsa(sig):
 
 
 def verify_and_extract_signed_data(message, signed_data_suffix: bytes | None):
-    # 64 bytes of data
-    # 64 bytes of signature
+    # 64 bytes of data (peer pubkey)
+    # 64 bytes of signature field — see candidate layouts below
     if len(message) != 128:
         raise ValueError("Unexpected message length")
     if signed_data_suffix is None:
@@ -86,26 +87,49 @@ def verify_and_extract_signed_data(message, signed_data_suffix: bytes | None):
         )
 
     data = message[:64]
-    signature = message[64:]
+    signature = bytes(message[64:])
     signed_data = data.tobytes() + signed_data_suffix
-    der_signature = raw_ecdsa_to_der(signature)
-    try:
-        key_bytes = bytes.fromhex(PUBLIC_KEY_K2)
-        serialization.load_der_public_key(key_bytes).verify(
-            der_signature, signed_data, ec.ECDSA(hashes.SHA256())
-        )
-        _LOGGER.debug("Signature OK")
-    except InvalidSignature:
-        _LOGGER.error(
-            "Peer pubkey signature verification failed. "
-            "pubkey=%s iv=%s signature=%s",
-            data.tobytes().hex(),
-            signed_data_suffix.hex(),
-            bytes(signature).hex(),
-        )
-        raise
+    pubkey = serialization.load_der_public_key(bytes.fromhex(PUBLIC_KEY_K2))
 
-    return data
+    # Bluetti firmware encodes the 64-byte signature field with one byte
+    # stripped from r or s, and a trailing 0x00 padding byte. So the layout
+    # is one of:
+    #   (a) r=[:32], s=[32:64]               — no padding (canonical raw r||s)
+    #   (b) r=[:31], s=[31:63], pad=[63]     — r is encoded as 31 bytes
+    #   (c) r=[:32], s=[32:63], pad=[63]     — s is encoded as 31 bytes
+    # The device's choice between (b) and (c) is not signalled in-band, so when
+    # the trailing byte is 0x00 we try both. ~75% of failed handshakes against
+    # this lib pre-fix were due to (b)/(c) — only ~25% of signatures had both
+    # r and s with their high bit set (the canonical (a) case).
+    candidates = [(32, 32, 32)]  # (r_len, s_offset, s_len)
+    if signature[63] == 0:
+        candidates.append((31, 31, 32))
+        candidates.append((32, 32, 31))
+
+    last_err: InvalidSignature | None = None
+    for r_len, s_offset, s_len in candidates:
+        r = int.from_bytes(signature[:r_len], "big")
+        s = int.from_bytes(signature[s_offset : s_offset + s_len], "big")
+        if r == 0 or s == 0:
+            continue
+        der_signature = encode_dss_signature(r, s)
+        try:
+            pubkey.verify(der_signature, signed_data, ec.ECDSA(hashes.SHA256()))
+            _LOGGER.debug(
+                "Signature OK (r_len=%d, s_len=%d)", r_len, s_len
+            )
+            return data
+        except InvalidSignature as err:
+            last_err = err
+
+    _LOGGER.error(
+        "Peer pubkey signature verification failed. "
+        "pubkey=%s iv=%s signature=%s",
+        data.tobytes().hex(),
+        signed_data_suffix.hex(),
+        signature.hex(),
+    )
+    raise last_err if last_err is not None else InvalidSignature()
 
 
 def pubkey_from_bytes(data):
